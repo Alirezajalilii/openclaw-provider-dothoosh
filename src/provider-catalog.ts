@@ -22,6 +22,22 @@ export function buildDotHooshProvider(): ModelProviderConfig {
   };
 }
 
+/**
+ * A listing that projects to no usable model (empty, all rows unusable) is an outage, not an
+ * empty catalog: rejecting makes the live catalog "unavailable" so the previous catalog stays,
+ * and keeps the empty result out of the live cache. Either listing failing rejects the whole
+ * build, so a healthy route can never hide a broken one.
+ */
+function requireUsableRows(
+  models: ModelDefinitionConfig[],
+  route: DotHooshRoute,
+): ModelDefinitionConfig[] {
+  if (models.length === 0) {
+    throw new Error(`dothoosh ${route} model listing has no usable models`);
+  }
+  return models;
+}
+
 /** The Anthropic listing sits beside the OpenAI root: `<origin>/anthropic/v1/models`. */
 function resolveAnthropicModelsEndpoint(baseUrl: string): string {
   return `${baseUrl.replace(/\/v1$/, "")}/anthropic/v1/models`;
@@ -70,7 +86,7 @@ export async function buildDotHooshLiveProvider(params: {
         cacheKeyParts: ["dothoosh", route, endpoint],
         buildRequestHeaders: ({ apiKey, discoveryApiKey }) =>
           buildHeaders(route, discoveryApiKey ?? apiKey),
-        projectRows: (rows) => projectDotHooshRows(rows, route),
+        projectRows: (rows) => requireUsableRows(projectDotHooshRows(rows, route), route),
       }),
     ),
   );
