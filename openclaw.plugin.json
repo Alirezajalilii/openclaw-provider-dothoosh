@@ -1,0 +1,46 @@
+{
+  "id": "dothoosh",
+  "name": "DotHoosh",
+  "description": "DotHoosh AI gateway provider: Claude, GPT, Gemini, DeepSeek and Kimi models through one OpenAI and Anthropic compatible API.",
+  "version": "2026.10.5",
+  "categories": [
+    "models"
+  ],
+  "activation": {
+    "onStartup": false
+  },
+  "providers": [
+    "dothoosh"
+  ],
+  "setup": {
+    "providers": [
+      {
+        "id": "dothoosh",
+        "envVars": [
+          "DOTHOOSH_API_KEY"
+        ]
+      }
+    ]
+  },
+  "providerAuthChoices": [
+    {
+      "provider": "dothoosh",
+      "method": "api-key",
+      "choiceId": "dothoosh-api-key",
+      "appGuidedSecret": true,
+      "choiceLabel": "DotHoosh API key",
+      "groupId": "dothoosh",
+      "groupLabel": "DotHoosh",
+      "groupHint": "OpenAI + Anthropic compatible gateway (multi-model)",
+      "optionKey": "dothooshApiKey",
+      "cliFlag": "--dothoosh-api-key",
+      "cliOption": "--dothoosh-api-key <key>",
+      "cliDescription": "DotHoosh API key"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
