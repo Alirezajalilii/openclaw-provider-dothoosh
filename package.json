@@ -6,6 +6,13 @@
   "license": "MIT",
   "author": "Alireza Jalili <alirezajalilii@gmail.com>",
   "homepage": "https://gateway.dothoosh.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alirezajalilii/openclaw-provider-dothoosh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Alirezajalilii/openclaw-provider-dothoosh/issues"
+  },
   "keywords": [
     "openclaw",
     "openclaw-plugin",
