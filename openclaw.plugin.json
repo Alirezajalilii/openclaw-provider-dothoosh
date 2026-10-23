@@ -2,7 +2,7 @@
   "id": "dothoosh",
   "name": "DotHoosh",
   "description": "DotHoosh AI gateway provider: Claude, GPT, Gemini, DeepSeek and Kimi models through one OpenAI and Anthropic compatible API.",
-  "version": "2026.10.5",
+  "version": "2026.10.7",
   "categories": [
     "models"
   ],

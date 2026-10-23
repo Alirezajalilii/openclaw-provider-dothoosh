@@ -12,7 +12,19 @@ declare module "openclaw/plugin-sdk/provider-model-shared" {
     input: string[];
     contextWindow: number;
     maxTokens: number;
-    cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    cost: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+      tieredPricing?: Array<{
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        range: [number, number] | [number];
+      }>;
+    };
     compat?: Record<string, unknown>;
     [key: string]: unknown;
   };

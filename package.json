@@ -1,6 +1,6 @@
 {
   "name": "@dothoosh/openclaw-provider",
-  "version": "2026.10.5",
+  "version": "2026.10.7",
   "description": "OpenClaw provider plugin for DotHoosh, an OpenAI and Anthropic compatible AI API gateway (Claude, GPT, Gemini, DeepSeek, Kimi).",
   "type": "module",
   "license": "MIT",
