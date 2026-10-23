@@ -38,9 +38,13 @@ declare module "openclaw/plugin-sdk/provider-model-shared" {
 }
 declare module "openclaw/plugin-sdk/provider-catalog-shared" {
   export type ProviderCatalogContext = {
-    config: Record<string, unknown>;
+    config: { models?: { providers?: Record<string, { baseUrl?: string }> } };
     env: Record<string, string | undefined>;
-    resolveProviderApiKey: (...args: never[]) => unknown;
+    resolveProviderApiKey: (providerId: string) => {
+      apiKey?: string;
+      discoveryApiKey?: string;
+      profileId?: string;
+    };
     resolveProviderAuth: (...args: never[]) => unknown;
     [key: string]: unknown;
   };
@@ -65,4 +69,49 @@ declare module "openclaw/plugin-sdk/provider-entry" {
     register: (api: unknown) => unknown;
     [key: string]: unknown;
   };
+}
+declare module "openclaw/plugin-sdk/model-catalog-pricing" {
+  export function normalizeOpenRouterModelPricing(value: unknown):
+    | {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        tieredPricing?: Array<{
+          input: number;
+          output: number;
+          cacheRead: number;
+          cacheWrite: number;
+          range: [number, number] | [number];
+        }>;
+      }
+    | undefined;
+}
+declare module "openclaw/plugin-sdk/provider-http" {
+  export function normalizeBaseUrl(baseUrl: string | undefined, defaultBaseUrl: string): string;
+}
+declare module "openclaw/plugin-sdk/provider-catalog-live-runtime" {
+  import type { ModelDefinitionConfig, ModelProviderConfig } from "openclaw/plugin-sdk/provider-model-shared";
+  export function buildLiveModelProviderConfig<T extends ModelDefinitionConfig>(params: {
+    discoveryMode?: "strict";
+    providerId: string;
+    endpoint: string;
+    providerConfig: Omit<ModelProviderConfig, "models">;
+    models: readonly T[];
+    apiKey?: string;
+    discoveryApiKey?: string;
+    fetchGuard?: (params: { url: string; init?: RequestInit; [key: string]: unknown }) => Promise<unknown>;
+    signal?: AbortSignal;
+    ttlMs?: number;
+    auditContext?: string;
+    cacheKeyParts?: readonly unknown[];
+    buildRequestHeaders?: (ctx: { apiKey?: string; discoveryApiKey?: string }) => HeadersInit;
+    projectRows?: (rows: readonly unknown[], fallback: ModelProviderConfig) => readonly T[];
+  }): Promise<ModelProviderConfig>;
+  export function runLiveProviderCatalog(params: {
+    providerId: string;
+    profileId?: string;
+    run: () => Promise<{ provider: ModelProviderConfig } | null>;
+  }): Promise<{ provider: ModelProviderConfig } | null>;
+  export function clearLiveCatalogCacheForTests(): void;
 }

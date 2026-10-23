@@ -3,7 +3,7 @@ import {
   createProviderConnectionPresetAppliers,
 } from "openclaw/plugin-sdk/provider-onboard";
 import {
-  buildDotHooshModelCatalog,
+  buildDotHooshSeedModels,
   DOTHOOSH_BASE_URL,
   DOTHOOSH_DEFAULT_MODEL_REF,
   DOTHOOSH_PROVIDER_API,
@@ -17,7 +17,7 @@ const dotHooshPreset = {
     providerId: "dothoosh",
     api: DOTHOOSH_PROVIDER_API,
     baseUrl: DOTHOOSH_BASE_URL,
-    catalogModels: buildDotHooshModelCatalog,
+    catalogModels: buildDotHooshSeedModels,
     aliases: [{ modelRef: DOTHOOSH_DEFAULT_MODEL_REF, alias: "DeepSeek V4 Pro" }],
   }),
 };

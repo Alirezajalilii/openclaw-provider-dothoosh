@@ -22,31 +22,20 @@ openclaw plugins install @dothoosh/openclaw-provider
 
 3. Select a model as `dothoosh/<model-id>`, for example `dothoosh/deepseek-v4-pro` (the default).
 
-Routing is handled by the plugin: Claude models use the Anthropic Messages endpoint
-(`https://gateway.dothoosh.com/anthropic`), GPT-6 models use the OpenAI Responses API, and the
-rest use OpenAI Chat Completions (`https://gateway.dothoosh.com/v1`). All models are text input.
+Models are not listed in the plugin. It reads DotHoosh's live catalog, `GET /v1/models` (OpenAI
+routes) and `GET /anthropic/v1/models` (Claude), with your key, so a new model or a price change
+reaches OpenClaw without a plugin release. Each row supplies the context window, output limit,
+text/image input, tool and reasoning support, per-token prices (including cache prices) and
+long-context price tiers. Results are cached for 60 seconds.
 
-## Models
+Routing follows the listing: models served on the Anthropic route use Anthropic Messages
+(`https://gateway.dothoosh.com/anthropic`), models whose only OpenAI route is Responses use the
+OpenAI Responses API, and the rest use OpenAI Chat Completions (`https://gateway.dothoosh.com/v1`).
 
-| Model ref | Name | API route |
-| --- | --- | --- |
-| `dothoosh/deepseek-v4-pro` | DeepSeek V4 Pro | openai-completions |
-| `dothoosh/deepseek-flash` | DeepSeek V4.1 Flash | openai-completions |
-| `dothoosh/kimi-k3` | Kimi K3 | openai-completions |
-| `dothoosh/kimi-k2.7-code` | Kimi K2.7 Code | openai-completions |
-| `dothoosh/kimi-k2.6` | Kimi K2.6 | openai-completions |
-| `dothoosh/gemini-4-argon` | Gemini 4 Argon | openai-completions |
-| `dothoosh/gemini-3.8-flash` | Gemini 3.8 Flash | openai-completions |
-| `dothoosh/gemini-3.5-flash-lite` | Gemini 3.5 Flash Lite | openai-completions |
-| `dothoosh/gpt-6.1-sol` | GPT-6.1 Sol | openai-responses |
-| `dothoosh/gpt-6-astra` | GPT-6 Astra | openai-responses |
-| `dothoosh/gpt-6-luna` | GPT-6 Luna | openai-responses |
-| `dothoosh/claude-opus-5-5` | Claude Opus 5.5 | anthropic-messages |
-| `dothoosh/claude-sonnet-5-5` | Claude Sonnet 5.5 | anthropic-messages |
-| `dothoosh/claude-haiku-5-5` | Claude Haiku 5.5 | anthropic-messages |
-| `dothoosh/claude-fable-5-1` | Claude Fable 5.1 | anthropic-messages |
-
-Context windows, limits and prices are defined in `src/models.ts`.
+Only the provider id, base URLs, the `DOTHOOSH_API_KEY` variable name and the default model id
+(`deepseek-v4-pro`, used by onboarding) are static. Before the first successful fetch the plugin
+shows just that one default model, with placeholder limits and no price. If a fetch fails, the provider reports
+itself unavailable rather than showing a stale price list. Run `openclaw models list --provider dothoosh` to see the live list.
 
 ## Development
 

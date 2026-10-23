@@ -1,4 +1,11 @@
+import { normalizeOpenRouterModelPricing } from "openclaw/plugin-sdk/model-catalog-pricing";
 import type { ModelApi, ModelDefinitionConfig } from "openclaw/plugin-sdk/provider-model-shared";
+import {
+  asOptionalRecord,
+  asPositiveSafeInteger,
+  filterStringEntries,
+  normalizeOptionalString,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 
 /** OpenAI-compatible root (Chat Completions at /chat/completions, Responses at /responses). */
 export const DOTHOOSH_BASE_URL = "https://gateway.dothoosh.com/v1";
@@ -11,223 +18,158 @@ export const DOTHOOSH_PROVIDER_API = "openai-completions" satisfies ModelApi;
 export const DOTHOOSH_DEFAULT_MODEL_ID = "deepseek-v4-pro";
 export const DOTHOOSH_DEFAULT_MODEL_REF = `dothoosh/${DOTHOOSH_DEFAULT_MODEL_ID}`;
 
-type DotHooshRates = { input: number; output: number; cacheRead: number; cacheWrite: number };
+// Used only when a listing row omits its limits, and for the single offline seed row.
+const DOTHOOSH_FALLBACK_CONTEXT_WINDOW = 200_000;
+const DOTHOOSH_FALLBACK_MAX_TOKENS = 8192;
 
-/**
- * Long prompts are billed at the vendor's long-context tier, applied to the whole request.
- * `range` is a half-open prompt-token interval (uncached input plus cache reads and writes).
- */
-type DotHooshCost = DotHooshRates & {
-  tieredPricing?: Array<DotHooshRates & { range: [number, number] | [number] }>;
-};
+/** Which gateway listing a row came from; the Anthropic listing only holds Claude-route models. */
+export type DotHooshRoute = "openai" | "anthropic";
 
-type DotHooshApi = "openai-completions" | "openai-responses" | "anthropic-messages";
-
-type DotHooshCatalogEntry = {
-  id: string;
-  name: string;
-  api: DotHooshApi;
-  reasoning: boolean;
-  contextWindow: number;
-  maxTokens: number;
-  /** USD per million tokens, before DotHoosh's Toman conversion (checked 2026-10-19). */
-  cost: DotHooshCost;
-};
-
-/** Adds the vendor's whole-request long-context tier: prompts of `fromTokens` or more use `long`. */
-function withLongContextTier(base: DotHooshRates, fromTokens: number, long: DotHooshRates): DotHooshCost {
-  return {
-    ...base,
-    tieredPricing: [
-      { range: [0, fromTokens], ...base },
-      { range: [fromTokens], ...long },
-    ],
-  };
+function zeroCost() {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
 
-// DotHoosh serves text input only, on every route.
-// Claude models are served only through the Anthropic Messages route. GPT-6 models admit
-// function tools only through the Responses route, so they use `openai-responses`.
-export const DOTHOOSH_MODEL_CATALOG: readonly DotHooshCatalogEntry[] = [
-  {
-    id: "deepseek-v4-pro",
-    name: "DeepSeek V4 Pro",
-    api: "openai-completions",
-    reasoning: true,
-    contextWindow: 1_000_000,
-    maxTokens: 384_000,
-    cost: { input: 1.694, output: 5.082, cacheRead: 0.0565, cacheWrite: 0 },
-  },
-  {
-    id: "deepseek-flash",
-    name: "DeepSeek V4.1 Flash",
-    api: "openai-completions",
-    reasoning: true,
-    contextWindow: 1_000_000,
-    maxTokens: 384_000,
-    cost: { input: 0.385, output: 1.54, cacheRead: 0.0077, cacheWrite: 0 },
-  },
-  {
-    id: "kimi-k3",
-    name: "Kimi K3",
-    api: "openai-completions",
-    reasoning: true,
-    contextWindow: 1_048_576,
-    maxTokens: 131_072,
-    cost: { input: 3.85, output: 19.25, cacheRead: 0.385, cacheWrite: 0 },
-  },
-  {
-    id: "kimi-k2.7-code",
-    name: "Kimi K2.7 Code",
-    api: "openai-completions",
-    reasoning: true,
-    contextWindow: 262_144,
-    maxTokens: 262_144,
-    cost: { input: 1.2192, output: 5.1333, cacheRead: 0.2438, cacheWrite: 0 },
-  },
-  {
-    id: "kimi-k2.6",
-    name: "Kimi K2.6",
-    api: "openai-completions",
-    reasoning: true,
-    contextWindow: 262_144,
-    maxTokens: 262_144,
-    cost: { input: 1.2192, output: 5.1333, cacheRead: 0.2053, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-4-argon",
-    name: "Gemini 4 Argon",
-    api: "openai-completions",
-    reasoning: true,
-    contextWindow: 1_048_576,
-    maxTokens: 65_536,
-    cost: { input: 2.5667, output: 12.8333, cacheRead: 0.1283, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-3.8-flash",
-    name: "Gemini 3.8 Flash",
-    api: "openai-completions",
-    reasoning: true,
-    contextWindow: 1_048_576,
-    maxTokens: 65_536,
-    cost: { input: 0.9625, output: 4.8125, cacheRead: 0.0963, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-3.5-flash-lite",
-    name: "Gemini 3.5 Flash Lite",
-    api: "openai-completions",
-    reasoning: true,
-    contextWindow: 1_048_576,
-    maxTokens: 65_536,
-    cost: { input: 0.385, output: 3.2083, cacheRead: 0.0385, cacheWrite: 0 },
-  },
-  {
-    id: "gpt-6.1-sol",
-    name: "GPT-6.1 Sol",
-    api: "openai-responses",
-    reasoning: true,
-    contextWindow: 1_050_000,
-    maxTokens: 128_000,
-    cost: withLongContextTier(
-      { input: 2.5667, output: 12.8333, cacheRead: 0.1283, cacheWrite: 3.2083 },
-      272_001,
-      { input: 5.1333, output: 19.25, cacheRead: 0.2567, cacheWrite: 6.4167 },
-    ),
-  },
-  {
-    id: "gpt-6-astra",
-    name: "GPT-6 Astra",
-    api: "openai-responses",
-    reasoning: true,
-    contextWindow: 1_050_000,
-    maxTokens: 128_000,
-    cost: withLongContextTier(
-      { input: 12.8333, output: 64.1667, cacheRead: 1.2833, cacheWrite: 16.0417 },
-      272_001,
-      { input: 25.6667, output: 96.25, cacheRead: 2.5667, cacheWrite: 32.0833 },
-    ),
-  },
-  {
-    id: "gpt-6-luna",
-    name: "GPT-6 Luna",
-    api: "openai-responses",
-    reasoning: true,
-    contextWindow: 1_050_000,
-    maxTokens: 128_000,
-    cost: withLongContextTier(
-      { input: 0.1283, output: 0.6417, cacheRead: 0.0128, cacheWrite: 0.1604 },
-      272_001,
-      { input: 0.2567, output: 0.9625, cacheRead: 0.0257, cacheWrite: 0.3208 },
-    ),
-  },
-  {
-    id: "claude-opus-5-5",
-    name: "Claude Opus 5.5",
-    api: "anthropic-messages",
-    reasoning: true,
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-    cost: { input: 5.1333, output: 25.6667, cacheRead: 0.2567, cacheWrite: 6.4167 },
-  },
-  {
-    id: "claude-sonnet-5-5",
-    name: "Claude Sonnet 5.5",
-    api: "anthropic-messages",
-    reasoning: true,
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-    cost: { input: 2.5667, output: 12.8333, cacheRead: 0.1283, cacheWrite: 3.2083 },
-  },
-  {
-    id: "claude-haiku-5-5",
-    name: "Claude Haiku 5.5",
-    api: "anthropic-messages",
-    reasoning: true,
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-    cost: withLongContextTier(
-      { input: 0.1283, output: 0.6417, cacheRead: 0.0128, cacheWrite: 0.1604 },
-      100_001,
-      { input: 0.6417, output: 3.2083, cacheRead: 0.0642, cacheWrite: 0.8021 },
-    ),
-  },
-  {
-    id: "claude-fable-5-1",
-    name: "Claude Fable 5.1",
-    api: "anthropic-messages",
-    reasoning: true,
-    contextWindow: 1_000_000,
-    maxTokens: 128_000,
-    cost: { input: 12.8333, output: 64.1667, cacheRead: 0.3208, cacheWrite: 16.0417 },
-  },
-];
+function readModalities(
+  architecture: Record<string, unknown> | undefined,
+  direction: "input" | "output",
+): string[] {
+  const explicit = filterStringEntries(architecture?.[`${direction}_modalities`]);
+  if (explicit.length > 0) {
+    return explicit;
+  }
+  const modality = normalizeOptionalString(architecture?.modality);
+  if (!modality) {
+    return [];
+  }
+  const [input = "", output = ""] = modality.split("->", 2);
+  return (direction === "input" ? input : output).split("+").filter(Boolean);
+}
 
-export function buildDotHooshModelDefinition(entry: DotHooshCatalogEntry): ModelDefinitionConfig {
+function readProtocols(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    const protocol = normalizeOptionalString(
+      typeof entry === "string" ? entry : asOptionalRecord(entry)?.protocol,
+    );
+    return protocol ? [protocol] : [];
+  });
+}
+
+/**
+ * Per-token decimal-string prices (OpenRouter convention) become per-million rates. The
+ * gateway's `pricing_tiers` carry the same keys plus `above_input_tokens`, which is the
+ * prompt-length override shape `normalizeOpenRouterModelPricing` already understands.
+ */
+function readCost(row: Record<string, unknown>): ModelDefinitionConfig["cost"] {
+  const pricing = asOptionalRecord(row.pricing);
+  if (!pricing) {
+    return zeroCost();
+  }
+  const overrides = (Array.isArray(row.pricing_tiers) ? row.pricing_tiers : []).flatMap((raw) => {
+    const { above_input_tokens: threshold, ...prices } = asOptionalRecord(raw) ?? {};
+    return threshold === undefined ? [] : [{ min_prompt_tokens: threshold, ...prices }];
+  });
+  return normalizeOpenRouterModelPricing({ ...pricing, overrides }) ?? zeroCost();
+}
+
+function readApi(route: DotHooshRoute, protocols: string[]): ModelApi {
+  if (route === "anthropic") {
+    return "anthropic-messages";
+  }
+  // Chat Completions is the provider default; Responses only when that is the sole OpenAI route.
+  return protocols.includes("openai-responses") && !protocols.includes("openai-chat-completions")
+    ? "openai-responses"
+    : DOTHOOSH_PROVIDER_API;
+}
+
+/** Maps one gateway listing row, or returns undefined for rows that are not usable text models. */
+export function buildDotHooshLiveModel(
+  value: unknown,
+  route: DotHooshRoute,
+): ModelDefinitionConfig | undefined {
+  const row = asOptionalRecord(value);
+  const id = normalizeOptionalString(row?.id);
+  if (!row || !id) {
+    return undefined;
+  }
+  const architecture = asOptionalRecord(row.architecture);
+  const outputModalities = readModalities(architecture, "output");
+  if (outputModalities.length > 0 && !outputModalities.includes("text")) {
+    return undefined;
+  }
+  const supportedParameters = filterStringEntries(row.supported_parameters);
+  const topProvider = asOptionalRecord(row.top_provider);
+  const api = readApi(route, readProtocols(row.protocols));
   const base = {
-    id: entry.id,
-    name: entry.name,
-    reasoning: entry.reasoning,
-    input: ["text" as const],
-    cost: {
-      ...entry.cost,
-      ...(entry.cost.tieredPricing && {
-        tieredPricing: entry.cost.tieredPricing.map((tier) => ({ ...tier })),
-      }),
-    },
-    contextWindow: entry.contextWindow,
-    maxTokens: entry.maxTokens,
+    id,
+    name: normalizeOptionalString(row.name) ?? normalizeOptionalString(row.display_name) ?? id,
+    reasoning:
+      supportedParameters.includes("reasoning") ||
+      supportedParameters.includes("include_reasoning"),
+    input: readModalities(architecture, "input").includes("image")
+      ? (["text", "image"] as Array<"text" | "image">)
+      : (["text"] as Array<"text" | "image">),
+    cost: readCost(row),
+    contextWindow:
+      asPositiveSafeInteger(topProvider?.context_length) ??
+      asPositiveSafeInteger(row.context_length) ??
+      asPositiveSafeInteger(row.context_window) ??
+      DOTHOOSH_FALLBACK_CONTEXT_WINDOW,
+    maxTokens:
+      asPositiveSafeInteger(topProvider?.max_completion_tokens) ??
+      asPositiveSafeInteger(row.max_output_tokens) ??
+      DOTHOOSH_FALLBACK_MAX_TOKENS,
   };
-  switch (entry.api) {
+  const supportsTools = Array.isArray(row.supported_parameters)
+    ? { supportsTools: supportedParameters.includes("tools") }
+    : {};
+  switch (api) {
     case "anthropic-messages":
-      return { ...base, api: entry.api, baseUrl: DOTHOOSH_ANTHROPIC_BASE_URL };
+      return {
+        ...base,
+        api,
+        baseUrl: DOTHOOSH_ANTHROPIC_BASE_URL,
+        ...(supportsTools.supportsTools === undefined ? {} : { compat: supportsTools }),
+      };
     case "openai-responses":
       // The gateway admits `store` only as false on Responses.
-      return { ...base, api: entry.api, compat: { supportsStore: false } };
-    case "openai-completions":
-      return { ...base, compat: { supportsStore: false, supportsDeveloperRole: false } };
+      return { ...base, api, compat: { supportsStore: false, ...supportsTools } };
+    default:
+      return {
+        ...base,
+        compat: { supportsStore: false, supportsDeveloperRole: false, ...supportsTools },
+      };
   }
 }
 
-export function buildDotHooshModelCatalog(): ModelDefinitionConfig[] {
-  return DOTHOOSH_MODEL_CATALOG.map(buildDotHooshModelDefinition);
+/** Projects a gateway listing into model definitions, dropping rows without a usable id. */
+export function projectDotHooshRows(
+  rows: readonly unknown[],
+  route: DotHooshRoute,
+): ModelDefinitionConfig[] {
+  return rows.flatMap((row) => {
+    const model = buildDotHooshLiveModel(row, route);
+    return model ? [model] : [];
+  });
+}
+
+/**
+ * Offline seed: only the onboarding default, so config setup works before any fetch. Its
+ * limits and zero price are placeholders; the live listing replaces the whole row.
+ */
+export function buildDotHooshSeedModels(): ModelDefinitionConfig[] {
+  return [
+    {
+      id: DOTHOOSH_DEFAULT_MODEL_ID,
+      name: DOTHOOSH_DEFAULT_MODEL_ID,
+      reasoning: true,
+      input: ["text"],
+      cost: zeroCost(),
+      contextWindow: DOTHOOSH_FALLBACK_CONTEXT_WINDOW,
+      maxTokens: DOTHOOSH_FALLBACK_MAX_TOKENS,
+      compat: { supportsStore: false, supportsDeveloperRole: false },
+    },
+  ];
 }
