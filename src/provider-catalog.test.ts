@@ -67,6 +67,9 @@ const OPENAI_ROWS = [
   },
   { id: "image-only", architecture: { modality: "text->image" } },
   { name: "no id" },
+  { id: "unavailable-model", status: "unavailable", supported_parameters: ["tools"] },
+  { id: "limited-model", status: "limited", supported_parameters: ["tools"] },
+  { id: "deprecated-model", status: "deprecated", supported_parameters: ["tools"] },
 ];
 
 const ANTHROPIC_ROWS = [
@@ -93,6 +96,21 @@ function listings(openai: unknown[], anthropic: unknown[]) {
   });
 }
 
+// Last-good rows are remembered per credential, so every test uses its own key.
+let keySeq = 0;
+const freshKey = () => `fixture-key-${++keySeq}`;
+
+/** Fake guard: the Anthropic route answers like `anthropic`, the OpenAI route like `openai`. */
+function routed(openai: () => Response, anthropic: () => Response) {
+  return vi.fn(async (params: GuardParams) => ({
+    response: params.url.includes("/anthropic/") ? anthropic() : openai(),
+    finalUrl: params.url,
+    release: async () => {},
+  }));
+}
+const down = () => new Response("nope", { status: 503 });
+const rowsOf = (data: unknown[]) => () => Response.json({ data });
+
 function byId(models: ReturnType<typeof projectDotHooshRows>, id: string) {
   const model = models.find((entry) => entry.id === id);
   if (!model) {
@@ -105,11 +123,8 @@ beforeEach(() => clearLiveCatalogCacheForTests());
 
 it("converts per-token prices to per-million rates and keeps cache prices", () => {
   const model = byId(projectDotHooshRows(OPENAI_ROWS, "openai"), "deepseek-v4");
-  // Per-token strings times 1e6 carry float noise, as for OpenRouter rows.
-  expect(model.cost.input).toBeCloseTo(1.7, 9);
-  expect(model.cost.output).toBeCloseTo(5.1, 9);
-  expect(model.cost.cacheRead).toBeCloseTo(0.06, 9);
-  expect(model.cost.cacheWrite).toBe(0);
+  // Per-token strings times 1e6 would carry float noise; rates are rounded to 6 decimals.
+  expect(model.cost).toEqual({ input: 1.7, output: 5.1, cacheRead: 0.06, cacheWrite: 0 });
   expect(model).toMatchObject({
     reasoning: true,
     input: ["text"],
@@ -130,16 +145,32 @@ it("turns pricing_tiers into whole-request tieredPricing above the threshold", (
     cacheWrite: 3,
     tieredPricing: [
       { range: [0, 272001], input: 2.5, output: 10, cacheRead: 0.25, cacheWrite: 3 },
-      { range: [272001], input: 5, output: 15, cacheRead: 0.25, cacheWrite: 3 },
+      // The tier omits the cache-write price, so it bills at the tier's own input price.
+      { range: [272001], input: 5, output: 15, cacheRead: 0.25, cacheWrite: 5 },
     ],
   });
 });
 
-it("uses Chat Completions when a model lists both OpenAI protocols", () => {
+it("prefers Responses when a model lists both OpenAI protocols", () => {
+  // GPT-6 chat completions admit function tools only in narrow cases; Responses always does.
   const model = byId(projectDotHooshRows(OPENAI_ROWS, "openai"), "dual-model");
-  expect(model.api).toBeUndefined();
+  expect(model.api).toBe("openai-responses");
+  expect(model.compat).toMatchObject({ supportsStore: false });
   expect(model.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   expect(model.compat).toMatchObject({ supportsTools: false });
+});
+
+it("keeps chat-only and chat plus Anthropic models on Chat Completions", () => {
+  const rows = [
+    { id: "chat-only", protocols: [{ protocol: "openai-chat-completions" }] },
+    {
+      id: "chat-and-anthropic",
+      protocols: [{ protocol: "openai-chat-completions" }, { protocol: "anthropic-messages" }],
+    },
+  ];
+  const models = projectDotHooshRows(rows, "openai");
+  expect(byId(models, "chat-only").api).toBeUndefined();
+  expect(byId(models, "chat-and-anthropic").api).toBeUndefined();
 });
 
 it("drops rows without an id or without text output", () => {
@@ -147,7 +178,24 @@ it("drops rows without an id or without text output", () => {
     "deepseek-v4",
     "gpt-5",
     "dual-model",
+    "limited-model",
+    "deprecated-model",
   ]);
+});
+
+it("skips models whose lifecycle status is unavailable, on both routes", () => {
+  const ids = (route: "openai" | "anthropic") =>
+    projectDotHooshRows(
+      [
+        { id: "a", status: "active" },
+        { id: "gone", status: "unavailable" },
+        { id: "slow", status: "degraded" },
+        { id: "unset" },
+      ],
+      route,
+    ).map((model) => model.id);
+  expect(ids("openai")).toEqual(["a", "slow", "unset"]);
+  expect(ids("anthropic")).toEqual(["a", "slow", "unset"]);
 });
 
 it("routes Anthropic-listing rows to the Anthropic Messages endpoint", () => {
@@ -165,15 +213,18 @@ it("routes Anthropic-listing rows to the Anthropic Messages endpoint", () => {
 
 it("fetches both listings, keys each route correctly and merges by id", async () => {
   const fetchSpy = listings(OPENAI_ROWS, ANTHROPIC_ROWS);
-  const provider = await buildDotHooshLiveProvider({ apiKey: "fixture-key", fetchGuard: fetchSpy });
+  const apiKey = freshKey();
+  const provider = await buildDotHooshLiveProvider({ apiKey, fetchGuard: fetchSpy });
   expect(provider.models.map((model) => model.id)).toEqual([
     "claude-opus-5",
     "deepseek-v4",
+    "deprecated-model",
     "dual-model",
     "gpt-5",
+    "limited-model",
   ]);
   // A model on both listings keeps its OpenAI-route entry.
-  expect(byId(provider.models, "dual-model").api).toBeUndefined();
+  expect(byId(provider.models, "dual-model").api).toBe("openai-responses");
   const calls = fetchSpy.mock.calls.map(([params]) => params);
   expect(calls.map((call) => call.url).sort()).toEqual([
     "https://gateway.dothoosh.com/anthropic/v1/models",
@@ -181,16 +232,17 @@ it("fetches both listings, keys each route correctly and merges by id", async ()
   ]);
   const headersOf = (needle: string) =>
     new Headers(calls.find((call) => call.url.includes(needle))?.init?.headers);
-  expect(headersOf("/v1/models").get("authorization")).toBe("Bearer fixture-key");
+  expect(headersOf("/v1/models").get("authorization")).toBe(`Bearer ${apiKey}`);
   expect(headersOf("/v1/models").get("x-api-key")).toBeNull();
-  expect(headersOf("/anthropic/").get("x-api-key")).toBe("fixture-key");
+  expect(headersOf("/anthropic/").get("x-api-key")).toBe(apiKey);
 });
 
 it("sends Bearer auth on the OpenAI listing", async () => {
   const fetchSpy = listings(OPENAI_ROWS, ANTHROPIC_ROWS);
-  await buildDotHooshLiveProvider({ apiKey: "fixture-key", fetchGuard: fetchSpy });
+  const apiKey = freshKey();
+  await buildDotHooshLiveProvider({ apiKey, fetchGuard: fetchSpy });
   const openai = fetchSpy.mock.calls.find(([params]) => !params.url.includes("/anthropic/"));
-  expect(new Headers(openai?.[0].init?.headers).get("authorization")).toBe("Bearer fixture-key");
+  expect(new Headers(openai?.[0].init?.headers).get("authorization")).toBe(`Bearer ${apiKey}`);
 });
 
 it("rejects on a failed fetch", async () => {
@@ -199,31 +251,108 @@ it("rejects on a failed fetch", async () => {
     finalUrl: params.url,
     release: async () => {},
   }));
-  await expect(buildDotHooshLiveProvider({ apiKey: "k", fetchGuard: failing })).rejects.toThrow();
+  await expect(buildDotHooshLiveProvider({ apiKey: freshKey(), fetchGuard: failing })).rejects.toThrow();
 });
 
-// A listing that is empty, an error envelope or all-unusable is an outage, never an empty
-// catalog: the provider rejects so the live-catalog outcome is "unavailable" and the previous
-// catalog stays. One broken listing must not drop the other listing's models either.
+// A well-formed empty list on ONE route is legitimate: the gateway filters both listings by the
+// key's model allow-list, so a key may have no Claude models (or no OpenAI-route models). A route
+// that returns rows none of which are usable is an outage, and so is losing both routes.
+it("accepts a well-formed empty OpenAI listing when the Anthropic one has models", async () => {
+  const provider = await buildDotHooshLiveProvider({
+    apiKey: freshKey(),
+    fetchGuard: listings([], ANTHROPIC_ROWS),
+  });
+  expect(provider.models.map((model) => model.id)).toEqual(["claude-opus-5", "dual-model"]);
+});
+
+it("accepts a well-formed empty Anthropic listing when the OpenAI one has models", async () => {
+  const provider = await buildDotHooshLiveProvider({
+    apiKey: freshKey(),
+    fetchGuard: listings(OPENAI_ROWS, []),
+  });
+  expect(provider.models.map((model) => model.id)).toContain("deepseek-v4");
+  expect(provider.models.map((model) => model.id)).not.toContain("claude-opus-5");
+});
+
+it("rejects when both listings are empty", async () => {
+  await expect(
+    buildDotHooshLiveProvider({ apiKey: freshKey(), fetchGuard: listings([], []) }),
+  ).rejects.toThrow(/dothoosh/i);
+});
+
 const UNUSABLE_LISTINGS: Array<[string, unknown[]]> = [
-  ["an empty data list", []],
   ["rows without an id", [{ name: "no id" }, null]],
   ["rows without text output", [{ id: "image-only", architecture: { modality: "text->image" } }]],
+  ["only unavailable models", [{ id: "gone", status: "unavailable" }]],
 ];
 
 for (const [label, rows] of UNUSABLE_LISTINGS) {
-  it(`rejects when the OpenAI listing is ${label}, even if the Anthropic one is healthy`, async () => {
+  it(`rejects when the OpenAI listing has ${label}, even if the Anthropic one is healthy`, async () => {
     await expect(
-      buildDotHooshLiveProvider({ apiKey: "k", fetchGuard: listings(rows, ANTHROPIC_ROWS) }),
+      buildDotHooshLiveProvider({
+        apiKey: freshKey(),
+        fetchGuard: listings(rows, ANTHROPIC_ROWS),
+      }),
     ).rejects.toThrow(/dothoosh/i);
   });
 
-  it(`rejects when the Anthropic listing is ${label}, even if the OpenAI one is healthy`, async () => {
+  it(`rejects when the Anthropic listing has ${label}, even if the OpenAI one is healthy`, async () => {
     await expect(
-      buildDotHooshLiveProvider({ apiKey: "k", fetchGuard: listings(OPENAI_ROWS, rows) }),
+      buildDotHooshLiveProvider({
+        apiKey: freshKey(),
+        fetchGuard: listings(OPENAI_ROWS, rows),
+      }),
     ).rejects.toThrow(/dothoosh/i);
   });
 }
+
+it("keeps a route's last good rows when only that route fails, never dropping the other route", async () => {
+  const apiKey = freshKey();
+  await buildDotHooshLiveProvider({ apiKey, fetchGuard: listings(OPENAI_ROWS, ANTHROPIC_ROWS) });
+  clearLiveCatalogCacheForTests();
+  // The Anthropic listing is now down; the OpenAI listing answers with a changed list.
+  const guard = routed(
+    rowsOf([{ id: "fresh-openai-model", supported_parameters: ["tools"] }]),
+    down,
+  );
+  const provider = await buildDotHooshLiveProvider({ apiKey, fetchGuard: guard });
+  const ids = provider.models.map((model) => model.id);
+  expect(ids).toContain("claude-opus-5"); // Anthropic route: last good rows kept
+  expect(ids).toContain("fresh-openai-model"); // OpenAI route: fresh rows used
+  expect(ids).not.toContain("deepseek-v4"); // OpenAI route: replaced by the fresh listing
+});
+
+it("rejects when a route fails and it has no last good rows", async () => {
+  await expect(
+    buildDotHooshLiveProvider({
+      apiKey: freshKey(),
+      fetchGuard: routed(rowsOf(OPENAI_ROWS), down),
+    }),
+  ).rejects.toThrow();
+});
+
+it("rejects when both routes fail, even with last good rows", async () => {
+  const apiKey = freshKey();
+  await buildDotHooshLiveProvider({ apiKey, fetchGuard: listings(OPENAI_ROWS, ANTHROPIC_ROWS) });
+  clearLiveCatalogCacheForTests();
+  await expect(
+    buildDotHooshLiveProvider({ apiKey, fetchGuard: routed(down, down) }),
+  ).rejects.toThrow();
+});
+
+it("does not share last good rows between credentials", async () => {
+  await buildDotHooshLiveProvider({
+    apiKey: freshKey(),
+    fetchGuard: listings(OPENAI_ROWS, ANTHROPIC_ROWS),
+  });
+  clearLiveCatalogCacheForTests();
+  await expect(
+    buildDotHooshLiveProvider({
+      apiKey: freshKey(),
+      fetchGuard: routed(rowsOf(OPENAI_ROWS), down),
+    }),
+  ).rejects.toThrow();
+});
 
 it("rejects an error-envelope body on either listing", async () => {
   for (const brokenRoute of ["anthropic", "openai"]) {
@@ -239,16 +368,20 @@ it("rejects an error-envelope body on either listing", async () => {
         release: async () => {},
       };
     });
-    await expect(buildDotHooshLiveProvider({ apiKey: "k", fetchGuard: guard })).rejects.toThrow();
+    await expect(buildDotHooshLiveProvider({ apiKey: freshKey(), fetchGuard: guard })).rejects.toThrow();
   }
 });
 
 it("does not cache an unusable listing as the catalog", async () => {
+  const apiKey = freshKey();
   await expect(
-    buildDotHooshLiveProvider({ apiKey: "k", fetchGuard: listings([], ANTHROPIC_ROWS) }),
+    buildDotHooshLiveProvider({
+      apiKey,
+      fetchGuard: listings([{ name: "no id" }], ANTHROPIC_ROWS),
+    }),
   ).rejects.toThrow();
   const provider = await buildDotHooshLiveProvider({
-    apiKey: "k",
+    apiKey,
     fetchGuard: listings(OPENAI_ROWS, ANTHROPIC_ROWS),
   });
   expect(provider.models.map((model) => model.id)).toContain("deepseek-v4");
@@ -256,7 +389,7 @@ it("does not cache an unusable listing as the catalog", async () => {
 
 it("keeps the live limits and prices over the offline seed", async () => {
   const provider = await buildDotHooshLiveProvider({
-    apiKey: "k",
+    apiKey: freshKey(),
     fetchGuard: listings(
       [
         {
@@ -272,7 +405,7 @@ it("keeps the live limits and prices over the offline seed", async () => {
   });
   const model = byId(provider.models, "deepseek-v4-pro");
   expect(model).toMatchObject({ contextWindow: 1_000_000, maxTokens: 384_000, reasoning: true });
-  expect(model.cost.input).toBeCloseTo(1.7, 9);
+  expect(model.cost.input).toBe(1.7);
   expect(model.compat).toMatchObject({ supportsTools: true });
 });
 
@@ -282,7 +415,12 @@ it("pins tier boundaries: the threshold itself stays on the lower tier", () => {
       [
         {
           id: "tiered",
-          pricing: { prompt: "0.000001", completion: "0.000002" },
+          pricing: {
+            prompt: "0.000001",
+            completion: "0.000002",
+            input_cache_read: "0.0000001",
+            input_cache_write: "0.00000125",
+          },
           pricing_tiers: [
             { above_input_tokens: 100000, prompt: "0.000002" },
             { above_input_tokens: 200000, completion: "0.000009" },
@@ -293,19 +431,99 @@ it("pins tier boundaries: the threshold itself stays on the lower tier", () => {
     ),
     "tiered",
   );
-  // [0, 100001) covers 100000 input tokens; the second tier starts at 200001 and carries the
-  // first tier's prompt price over.
+  // [0, 100001) covers 100000 input tokens. Omitted tier fields come from the BASE price, never
+  // from the tier below; an omitted cache write bills at that tier's own input price.
   expect(model.cost.tieredPricing).toEqual([
-    { range: [0, 100001], input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
-    { range: [100001, 200001], input: 2, output: 2, cacheRead: 0, cacheWrite: 0 },
-    { range: [200001], input: 2, output: 9, cacheRead: 0, cacheWrite: 0 },
+    { range: [0, 100001], input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.25 },
+    { range: [100001, 200001], input: 2, output: 2, cacheRead: 0.1, cacheWrite: 2 },
+    { range: [200001], input: 1, output: 9, cacheRead: 0.1, cacheWrite: 1 },
   ]);
+});
+
+it("rounds tier prices like base prices", () => {
+  const model = byId(
+    projectDotHooshRows(
+      [
+        {
+          id: "gpt-6-luna",
+          pricing: {
+            prompt: "0.000000128336",
+            completion: "0.00000064167",
+            input_cache_read: "0.000000012837",
+            input_cache_write: "0.00000016042",
+          },
+          pricing_tiers: [
+            {
+              above_input_tokens: 272000,
+              prompt: "0.000000256669",
+              completion: "0.000000962503",
+              input_cache_read: "0.000000025669",
+              input_cache_write: "0.000000320837",
+            },
+          ],
+        },
+      ],
+      "openai",
+    ),
+    "gpt-6-luna",
+  );
+  expect(model.cost).toEqual({
+    input: 0.128336,
+    output: 0.64167,
+    cacheRead: 0.012837,
+    cacheWrite: 0.16042,
+    tieredPricing: [
+      {
+        range: [0, 272001],
+        input: 0.128336,
+        output: 0.64167,
+        cacheRead: 0.012837,
+        cacheWrite: 0.16042,
+      },
+      {
+        range: [272001],
+        input: 0.256669,
+        output: 0.962503,
+        cacheRead: 0.025669,
+        cacheWrite: 0.320837,
+      },
+    ],
+  });
+});
+
+it("never invents an 8192 output cap: a row without one is bounded by its context window", () => {
+  const kimi = byId(
+    projectDotHooshRows([{ id: "kimi-k2.6", context_length: 262144 }], "openai"),
+    "kimi-k2.6",
+  );
+  expect(kimi).toMatchObject({ contextWindow: 262144, maxTokens: 262144 });
+  const bare = byId(projectDotHooshRows([{ id: "bare" }], "openai"), "bare");
+  expect(bare.maxTokens).toBe(bare.contextWindow);
+});
+
+it("points Anthropic-route rows at the resolved base URL, not the production URL", () => {
+  const rows = [{ id: "claude-x", type: "model" }];
+  expect(byId(projectDotHooshRows(rows, "anthropic"), "claude-x").baseUrl).toBe(
+    "https://gateway.dothoosh.com/anthropic",
+  );
+  expect(
+    byId(projectDotHooshRows(rows, "anthropic", "https://proxy.example/v1"), "claude-x").baseUrl,
+  ).toBe("https://proxy.example/anthropic");
+});
+
+it("builds Anthropic rows against a custom base URL end to end", async () => {
+  const provider = await buildDotHooshLiveProvider({
+    apiKey: freshKey(),
+    baseUrl: "https://proxy.example/v1/",
+    fetchGuard: listings(OPENAI_ROWS, ANTHROPIC_ROWS),
+  });
+  expect(byId(provider.models, "claude-opus-5").baseUrl).toBe("https://proxy.example/anthropic");
 });
 
 it("derives the Anthropic listing from an explicit base URL", async () => {
   const fetchSpy = listings(OPENAI_ROWS, ANTHROPIC_ROWS);
   await buildDotHooshLiveProvider({
-    apiKey: "k",
+    apiKey: freshKey(),
     baseUrl: "https://proxy.example/v1/",
     fetchGuard: fetchSpy,
   });
