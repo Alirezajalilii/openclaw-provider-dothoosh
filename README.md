@@ -54,7 +54,7 @@ npm pack
 openclaw plugins install npm-pack:./dothoosh-openclaw-provider-<version>.tgz
 ```
 
-Requires Node 24.22.1 or newer (an OpenClaw requirement).
+Requires Node 24.22.1 or newer on the 24 line, or 26.12.1 or newer (an OpenClaw requirement).
 
 ## License
 

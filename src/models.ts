@@ -15,7 +15,16 @@ export const DOTHOOSH_BASE_URL = "https://gateway.dothoosh.com/v1";
  * https://gateway.dothoosh.com/anthropic/v1/messages (`x-api-key` auth only).
  */
 export function resolveDotHooshAnthropicBaseUrl(baseUrl: string = DOTHOOSH_BASE_URL): string {
-  return `${baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "")}/anthropic`;
+  return `${trimTrailingSlashes(baseUrl).replace(/\/v1$/, "")}/anthropic`;
+}
+
+/** Linear-time trailing "/" trim; a /\/+$/ regex is quadratic on long slash runs. */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return value.slice(0, end);
 }
 export const DOTHOOSH_ANTHROPIC_BASE_URL = resolveDotHooshAnthropicBaseUrl();
 export const DOTHOOSH_PROVIDER_API = "openai-completions" satisfies ModelApi;
