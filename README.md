@@ -28,14 +28,22 @@ reaches OpenClaw without a plugin release. Each row supplies the context window,
 text/image input, tool and reasoning support, per-token prices (including cache prices) and
 long-context price tiers. Results are cached for 60 seconds.
 
-Routing follows the listing: models served on the Anthropic route use Anthropic Messages
-(`https://gateway.dothoosh.com/anthropic`), models whose only OpenAI route is Responses use the
-OpenAI Responses API, and the rest use OpenAI Chat Completions (`https://gateway.dothoosh.com/v1`).
+Routing follows the listing: models the gateway serves on the OpenAI Responses API use it (GPT-6 chat
+completions admit function tools only in narrow cases), models served only on the Anthropic route use
+Anthropic Messages (`https://gateway.dothoosh.com/anthropic`), and the rest use OpenAI Chat Completions
+(`https://gateway.dothoosh.com/v1`). Models whose status is `unavailable` are not listed, and a row
+without an output cap is limited by its context window. A custom base URL moves both listings and the
+Claude models with it (`https://proxy.example/v1` gives `https://proxy.example/anthropic`).
 
 Only the provider id, base URLs, the `DOTHOOSH_API_KEY` variable name and the default model id
 (`deepseek-v4-pro`, used by onboarding) are static. Before the first successful fetch the plugin
-shows just that one default model, with placeholder limits and no price. If a fetch fails, the provider reports
-itself unavailable rather than showing a stale price list. Run `openclaw models list --provider dothoosh` to see the live list.
+shows just that one default model, with placeholder limits and no price.
+
+Both listings are filtered by your key's model allow-list, so a well-formed empty list on one route is
+normal. A refresh counts as an outage, and the previous catalog stays, when both routes fail, both are
+empty, or a route returns rows that are all unusable. When only one route fails (HTTP error, network
+error, error body or non-JSON), that route keeps its last good rows for your key while the other route
+refreshes. Run `openclaw models list --provider dothoosh` to see the live list.
 
 ## Development
 
